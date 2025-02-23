@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 use std::collections::HashSet;
+use std::sync::Arc;
 
 use cosmic::app::{Core, Task};
 use cosmic::iced::futures::SinkExt;
@@ -32,6 +33,7 @@ pub enum Message {
     PopupClosed(Id),
     KdeConnect(KdeConnectEvent),
     PairDevice(String),
+    SendPing(String),
 }
 
 #[derive(Debug, Clone)]
@@ -112,14 +114,21 @@ impl Application for CosmicConnect {
     }
 
     fn view_window(&self, _id: Id) -> Element<Self::Message> {
-        let mut content_list = widget::list_column().add(widget::text::title1(fl!("applet-name")));
+        let mut content_list = widget::list_column().add(settings::item(
+            fl!("applet-name"),
+            widget::button::standard("Disconnect"),
+        ));
 
         for connected in &self.connected_devices {
-            content_list = content_list.add(settings::item(
-                connected.name.clone(),
+            content_list = content_list.add(settings::item_row(vec![
+                widget::text::title4(connected.name.clone()).into(),
                 widget::button::standard("Pair")
-                    .on_press(Message::PairDevice(connected.id.clone())),
-            ));
+                    .on_press(Message::PairDevice(connected.id.clone()))
+                    .into(),
+                widget::button::standard("Send Ping")
+                    .on_press(Message::SendPing(connected.id.clone()))
+                    .into(),
+            ]));
         }
 
         self.core.applet.popup_container(content_list).into()
@@ -157,7 +166,7 @@ impl Application for CosmicConnect {
                 match event {
                     KdeConnectEvent::Connected((client, tx)) => {
                         info!("Connected to backend server");
-                        let config = client.config.clone();
+                        let config = Arc::new(client.config.clone());
                         client.send(KdeConnectAction::StartListener { config, tx });
                         self.kdeconnect = Some(client);
                     }
@@ -171,6 +180,11 @@ impl Application for CosmicConnect {
             Message::PairDevice(id) => {
                 if let Some(client) = &self.kdeconnect {
                     client.send(KdeConnectAction::PairDevice { id });
+                }
+            }
+            Message::SendPing(id) => {
+                if let Some(client) = &self.kdeconnect {
+                    client.send(KdeConnectAction::SendPing { id });
                 }
             }
         }
