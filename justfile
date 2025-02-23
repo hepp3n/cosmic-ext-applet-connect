@@ -1,5 +1,5 @@
-name := 'cosmic-applet-template'
-export APPID := 'com.example.CosmicAppletTemplate'
+name := 'cosmic-ext-applet-connect'
+export APPID := 'dev.heppen.CosmicExtConnect'
 
 rootdir := ''
 prefix := '/usr'

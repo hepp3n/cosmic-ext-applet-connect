@@ -48,7 +48,7 @@ impl Application for CosmicConnect {
 
     type Message = Message;
 
-    const APP_ID: &'static str = "dev.heppen.CosmicConnect";
+    const APP_ID: &'static str = "dev.heppen.CosmicExtConnect";
 
     fn core(&self) -> &Core {
         &self.core
