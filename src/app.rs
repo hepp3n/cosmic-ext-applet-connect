@@ -1,52 +1,54 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
+use std::collections::HashSet;
+
 use cosmic::app::{Core, Task};
+use cosmic::iced::futures::SinkExt;
 use cosmic::iced::window::Id;
-use cosmic::iced::Limits;
+use cosmic::iced::{stream, Limits, Subscription};
 use cosmic::iced_winit::commands::popup::{destroy_popup, get_popup};
 use cosmic::widget::{self, settings};
 use cosmic::{Application, Element};
+use kdeconnect::device::{ConnectedDevice, ConnectedDevices};
+use kdeconnect::{run_server, KdeConnectAction, KdeConnectClient};
+use tokio::sync::mpsc;
+use tracing::info;
 
 use crate::fl;
 
-/// This is the struct that represents your application.
-/// It is used to define the data that will be used by your application.
-#[derive(Default)]
-pub struct YourApp {
+pub struct CosmicConnect {
     /// Application state which is managed by the COSMIC runtime.
     core: Core,
     /// The popup id.
     popup: Option<Id>,
-    /// Example row toggler.
-    example_row: bool,
+    /// kdeconnect client
+    kdeconnect: Option<KdeConnectClient>,
+    connected_devices: ConnectedDevices,
 }
 
-/// This is the enum that contains all the possible variants that your application will need to transmit messages.
-/// This is used to communicate between the different parts of your application.
-/// If your application does not need to send messages, you can use an empty enum or `()`.
 #[derive(Debug, Clone)]
 pub enum Message {
     TogglePopup,
     PopupClosed(Id),
-    ToggleExampleRow(bool),
+    KdeConnect(KdeConnectEvent),
+    PairDevice(String),
 }
 
-/// Implement the `Application` trait for your application.
-/// This is where you define the behavior of your application.
-///
-/// The `Application` trait requires you to define the following types and constants:
-/// - `Executor` is the async executor that will be used to run your application's commands.
-/// - `Flags` is the data that your application needs to use before it starts.
-/// - `Message` is the enum that contains all the possible variants that your application will need to transmit messages.
-/// - `APP_ID` is the unique identifier of your application.
-impl Application for YourApp {
+#[derive(Debug, Clone)]
+pub enum KdeConnectEvent {
+    Connected((KdeConnectClient, mpsc::UnboundedSender<ConnectedDevice>)),
+    DevicesUpdated(ConnectedDevice),
+    // Disconnected,
+}
+
+impl Application for CosmicConnect {
     type Executor = cosmic::executor::Default;
 
     type Flags = ();
 
     type Message = Message;
 
-    const APP_ID: &'static str = "com.example.CosmicAppletTemplate";
+    const APP_ID: &'static str = "dev.heppen.CosmicConnect";
 
     fn core(&self) -> &Core {
         &self.core
@@ -56,17 +58,12 @@ impl Application for YourApp {
         &mut self.core
     }
 
-    /// This is the entry point of your application, it is where you initialize your application.
-    ///
-    /// Any work that needs to be done before the application starts should be done here.
-    ///
-    /// - `core` is used to passed on for you by libcosmic to use in the core of your own application.
-    /// - `flags` is used to pass in any data that your application needs to use before it starts.
-    /// - `Command` type is used to send messages to your application. `Command::none()` can be used to send no messages to your application.
     fn init(core: Core, _flags: Self::Flags) -> (Self, Task<Self::Message>) {
-        let app = YourApp {
+        let app = CosmicConnect {
             core,
-            ..Default::default()
+            popup: None,
+            kdeconnect: None,
+            connected_devices: HashSet::new(),
         };
 
         (app, Task::none())
@@ -76,12 +73,36 @@ impl Application for YourApp {
         Some(Message::PopupClosed(id))
     }
 
-    /// This is the main view of your application, it is the root of your widget tree.
-    ///
-    /// The `Element` type is used to represent the visual elements of your application,
-    /// it has a `Message` associated with it, which dictates what type of message it can send.
-    ///
-    /// To get a better sense of which widgets are available, check out the `widget` module.
+    fn subscription(&self) -> Subscription<Self::Message> {
+        Subscription::run_with_id(
+            1,
+            stream::channel(100, |mut output| async move {
+                let (client_tx, server_rx) = mpsc::unbounded_channel::<KdeConnectAction>();
+                let client = KdeConnectClient::new(client_tx);
+
+                tokio::spawn(async move {
+                    run_server(server_rx).await;
+                });
+
+                let (device_tx, mut device_rx) = mpsc::unbounded_channel::<ConnectedDevice>();
+
+                let _ = output
+                    .send(Message::KdeConnect(KdeConnectEvent::Connected((
+                        client, device_tx,
+                    ))))
+                    .await;
+
+                while let Some(devices) = device_rx.recv().await {
+                    let _ = output
+                        .send(Message::KdeConnect(KdeConnectEvent::DevicesUpdated(
+                            devices,
+                        )))
+                        .await;
+                }
+            }),
+        )
+    }
+
     fn view(&self) -> Element<Self::Message> {
         self.core
             .applet
@@ -91,20 +112,19 @@ impl Application for YourApp {
     }
 
     fn view_window(&self, _id: Id) -> Element<Self::Message> {
-        let content_list = widget::list_column()
-            .padding(5)
-            .spacing(0)
-            .add(settings::item(
-                fl!("example-row"),
-                widget::toggler(self.example_row).on_toggle(Message::ToggleExampleRow),
+        let mut content_list = widget::list_column().add(widget::text::title1(fl!("applet-name")));
+
+        for connected in &self.connected_devices {
+            content_list = content_list.add(settings::item(
+                connected.name.clone(),
+                widget::button::standard("Pair")
+                    .on_press(Message::PairDevice(connected.id.clone())),
             ));
+        }
 
         self.core.applet.popup_container(content_list).into()
     }
 
-    /// Application messages are handled here. The application state can be modified based on
-    /// what message was received. Commands may be returned for asynchronous execution on a
-    /// background thread managed by the application's executor.
     fn update(&mut self, message: Self::Message) -> Task<Self::Message> {
         match message {
             Message::TogglePopup => {
@@ -133,7 +153,26 @@ impl Application for YourApp {
                     self.popup = None;
                 }
             }
-            Message::ToggleExampleRow(toggled) => self.example_row = toggled,
+            Message::KdeConnect(event) => {
+                match event {
+                    KdeConnectEvent::Connected((client, tx)) => {
+                        info!("Connected to backend server");
+                        let config = client.config.clone();
+                        client.send(KdeConnectAction::StartListener { config, tx });
+                        self.kdeconnect = Some(client);
+                    }
+                    KdeConnectEvent::DevicesUpdated(device) => {
+                        self.connected_devices.insert(device);
+                    } // KdeConnectEvent::Disconnected => {
+                      //     self.kdeconnect = None;
+                      // }
+                };
+            }
+            Message::PairDevice(id) => {
+                if let Some(client) = &self.kdeconnect {
+                    client.send(KdeConnectAction::PairDevice { id });
+                }
+            }
         }
         Task::none()
     }

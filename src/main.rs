@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
-use app::YourApp;
+use app::CosmicConnect;
+use tracing::Level;
+use tracing_subscriber::FmtSubscriber;
 /// The `app` module is used by convention to indicate the main component of our application.
 mod app;
 mod core;
@@ -11,5 +13,15 @@ mod core;
 /// - `()` is the flags that your app needs to use before it starts.
 ///  If your app does not need any flags, you can pass in `()`.
 fn main() -> cosmic::iced::Result {
-    cosmic::applet::run::<YourApp>(())
+    // a builder for `FmtSubscriber`.
+    let subscriber = FmtSubscriber::builder()
+        // all spans/events with a level higher than TRACE (e.g, debug, info, warn, etc.)
+        // will be written to stdout.
+        .with_max_level(Level::INFO)
+        // completes the builder.
+        .finish();
+
+    tracing::subscriber::set_global_default(subscriber).expect("setting default subscriber failed");
+
+    cosmic::applet::run::<CosmicConnect>(())
 }

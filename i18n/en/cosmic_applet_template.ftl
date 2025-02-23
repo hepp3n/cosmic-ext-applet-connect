@@ -1,1 +1,1 @@
-example-row = Example row
+applet-name = Cosmic Connect
