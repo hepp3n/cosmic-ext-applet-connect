@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 use std::collections::HashSet;
-use std::sync::Arc;
 
 use cosmic::app::{Core, Task};
 use cosmic::iced::futures::SinkExt;
@@ -11,7 +10,7 @@ use cosmic::iced_winit::commands::popup::{destroy_popup, get_popup};
 use cosmic::widget::{self, settings};
 use cosmic::{Application, Element};
 use kdeconnect::device::{ConnectedDevice, ConnectedDevices};
-use kdeconnect::{run_server, KdeConnectAction, KdeConnectClient};
+use kdeconnect::{KdeConnectAction, KdeConnectClient};
 use tokio::sync::mpsc;
 use tracing::info;
 
@@ -32,13 +31,13 @@ pub enum Message {
     TogglePopup,
     PopupClosed(Id),
     KdeConnect(KdeConnectEvent),
-    PairDevice(String),
-    SendPing(String),
+    PairDevice,
+    SendPing,
 }
 
 #[derive(Debug, Clone)]
 pub enum KdeConnectEvent {
-    Connected((KdeConnectClient, mpsc::UnboundedSender<ConnectedDevice>)),
+    Connected(KdeConnectClient),
     DevicesUpdated(ConnectedDevice),
     // Disconnected,
 }
@@ -79,19 +78,11 @@ impl Application for CosmicConnect {
         Subscription::run_with_id(
             1,
             stream::channel(100, |mut output| async move {
-                let (client_tx, server_rx) = mpsc::unbounded_channel::<KdeConnectAction>();
-                let client = KdeConnectClient::new(client_tx);
-
-                tokio::spawn(async move {
-                    run_server(server_rx).await;
-                });
-
                 let (device_tx, mut device_rx) = mpsc::unbounded_channel::<ConnectedDevice>();
+                let client = KdeConnectClient::new(device_tx);
 
                 let _ = output
-                    .send(Message::KdeConnect(KdeConnectEvent::Connected((
-                        client, device_tx,
-                    ))))
+                    .send(Message::KdeConnect(KdeConnectEvent::Connected(client)))
                     .await;
 
                 while let Some(devices) = device_rx.recv().await {
@@ -123,10 +114,10 @@ impl Application for CosmicConnect {
             content_list = content_list.add(settings::item_row(vec![
                 widget::text::title4(connected.name.clone()).into(),
                 widget::button::standard("Pair")
-                    .on_press(Message::PairDevice(connected.id.clone()))
+                    .on_press(Message::PairDevice)
                     .into(),
                 widget::button::standard("Send Ping")
-                    .on_press(Message::SendPing(connected.id.clone()))
+                    .on_press(Message::SendPing)
                     .into(),
             ]));
         }
@@ -164,10 +155,8 @@ impl Application for CosmicConnect {
             }
             Message::KdeConnect(event) => {
                 match event {
-                    KdeConnectEvent::Connected((client, tx)) => {
+                    KdeConnectEvent::Connected(client) => {
                         info!("Connected to backend server");
-                        let config = Arc::new(client.config.clone());
-                        client.send(KdeConnectAction::StartListener { config, tx });
                         self.kdeconnect = Some(client);
                     }
                     KdeConnectEvent::DevicesUpdated(device) => {
@@ -177,14 +166,14 @@ impl Application for CosmicConnect {
                       // }
                 };
             }
-            Message::PairDevice(id) => {
+            Message::PairDevice => {
                 if let Some(client) = &self.kdeconnect {
-                    client.send(KdeConnectAction::PairDevice { id });
+                    client.send(KdeConnectAction::PairDevice);
                 }
             }
-            Message::SendPing(id) => {
+            Message::SendPing => {
                 if let Some(client) = &self.kdeconnect {
-                    client.send(KdeConnectAction::SendPing { id });
+                    client.send(KdeConnectAction::SendPing);
                 }
             }
         }
