@@ -11,7 +11,7 @@ use cosmic::widget::{self, settings};
 use cosmic::{Application, Element};
 use kdeconnect::device::{ConnectedDevice, ConnectedDevices};
 use kdeconnect::{KdeConnectAction, KdeConnectClient};
-use tokio::sync::mpsc;
+use tokio::sync::mpsc::channel;
 use tracing::info;
 
 use crate::fl;
@@ -78,8 +78,8 @@ impl Application for CosmicConnect {
         Subscription::run_with_id(
             1,
             stream::channel(100, |mut output| async move {
-                let (device_tx, mut device_rx) = mpsc::unbounded_channel::<ConnectedDevice>();
-                let client = KdeConnectClient::new(device_tx);
+                let (device_tx, mut device_rx) = channel::<ConnectedDevice>(4);
+                let client = KdeConnectClient::new(device_tx).await.unwrap();
 
                 let _ = output
                     .send(Message::KdeConnect(KdeConnectEvent::Connected(client)))
@@ -168,12 +168,12 @@ impl Application for CosmicConnect {
             }
             Message::PairDevice => {
                 if let Some(client) = &self.kdeconnect {
-                    client.send(KdeConnectAction::PairDevice);
+                    let _ = client.send_action(KdeConnectAction::PairDevice);
                 }
             }
             Message::SendPing => {
                 if let Some(client) = &self.kdeconnect {
-                    client.send(KdeConnectAction::SendPing);
+                    let _ = client.send_action(KdeConnectAction::SendPing);
                 }
             }
         }
