@@ -31,6 +31,7 @@ pub enum Message {
     TogglePopup,
     PopupClosed(Id),
     KdeConnect(KdeConnectEvent),
+    DisconnectDevice,
     PairDevice,
     SendPing,
 }
@@ -39,7 +40,6 @@ pub enum Message {
 pub enum KdeConnectEvent {
     Connected(KdeConnectClient),
     DevicesUpdated(ConnectedDevice),
-    // Disconnected,
 }
 
 impl Application for CosmicConnect {
@@ -107,7 +107,7 @@ impl Application for CosmicConnect {
     fn view_window(&self, _id: Id) -> Element<Self::Message> {
         let mut content_list = widget::list_column().add(settings::item(
             fl!("applet-name"),
-            widget::button::standard("Disconnect"),
+            widget::button::standard("Disconnect").on_press(Message::DisconnectDevice),
         ));
 
         for connected in &self.connected_devices {
@@ -161,10 +161,15 @@ impl Application for CosmicConnect {
                     }
                     KdeConnectEvent::DevicesUpdated(device) => {
                         self.connected_devices.insert(device);
-                    } // KdeConnectEvent::Disconnected => {
-                      //     self.kdeconnect = None;
-                      // }
+                    }
                 };
+            }
+            Message::DisconnectDevice => {
+                if let Some(client) = &self.kdeconnect {
+                    let _ = client.send_action(KdeConnectAction::Disconnect);
+                }
+                self.kdeconnect = None;
+                self.connected_devices.clear();
             }
             Message::PairDevice => {
                 if let Some(client) = &self.kdeconnect {
