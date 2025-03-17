@@ -32,8 +32,8 @@ pub enum Message {
     PopupClosed(Id),
     KdeConnect(KdeConnectEvent),
     DisconnectDevice,
-    PairDevice,
-    SendPing,
+    PairDevice(String),
+    SendPing(String),
 }
 
 #[derive(Debug, Clone)]
@@ -114,10 +114,10 @@ impl Application for CosmicConnect {
             content_list = content_list.add(settings::item_row(vec![
                 widget::text::title4(connected.name.clone()).into(),
                 widget::button::standard("Pair")
-                    .on_press(Message::PairDevice)
+                    .on_press(Message::PairDevice(connected.id.clone()))
                     .into(),
                 widget::button::standard("Send Ping")
-                    .on_press(Message::SendPing)
+                    .on_press(Message::SendPing(connected.id.clone()))
                     .into(),
             ]));
         }
@@ -171,12 +171,12 @@ impl Application for CosmicConnect {
                 self.kdeconnect = None;
                 self.connected_devices.clear();
             }
-            Message::PairDevice => {
+            Message::PairDevice(_id) => {
                 if let Some(client) = &self.kdeconnect {
                     let _ = client.send_action(KdeConnectAction::PairDevice);
                 }
             }
-            Message::SendPing => {
+            Message::SendPing(_id) => {
                 if let Some(client) = &self.kdeconnect {
                     let _ = client.send_action(KdeConnectAction::SendPing);
                 }
