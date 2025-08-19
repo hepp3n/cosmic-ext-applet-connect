@@ -9,7 +9,7 @@ use cosmic::iced::{self, stream, Limits, Subscription};
 use cosmic::iced_winit::commands::popup::{destroy_popup, get_popup};
 use cosmic::widget::{self, settings};
 use cosmic::{Application, Element};
-use kdeconnect::device::{ConnectedId, DeviceAction};
+use kdeconnect::device::{ConnectedId, DeviceAction, Linked};
 use kdeconnect::KdeConnect;
 use tracing::info;
 
@@ -22,7 +22,7 @@ pub struct CosmicConnect {
     popup: Option<Id>,
     /// KdeConnect client instance.
     kdeconnect: Option<KdeConnect>,
-    connected_devices: HashSet<ConnectedId>,
+    connected_devices: HashSet<Linked>,
 }
 
 #[derive(Debug, Clone)]
@@ -38,7 +38,7 @@ pub enum Message {
 #[derive(Debug, Clone)]
 pub enum KdeConnectEvent {
     Connected(KdeConnect),
-    DevicesUpdated(ConnectedId),
+    DevicesUpdated(Linked),
 }
 
 impl Application for CosmicConnect {
@@ -91,7 +91,7 @@ impl Application for CosmicConnect {
                 while let Some(devices) = devices.next().await {
                     let _ = output
                         .send(Message::KdeConnect(KdeConnectEvent::DevicesUpdated(
-                            devices.0,
+                            devices,
                         )))
                         .await;
                 }
@@ -111,17 +111,21 @@ impl Application for CosmicConnect {
         let mut content_list = widget::list_column().add(widget::text(fl!("applet-name")));
 
         for connected in &self.connected_devices {
+            let device_id = connected.0.clone();
+            let device_name = connected.1.clone();
+            let _connection_type = connected.2.clone();
+
             content_list = content_list.add(settings::item_row(vec![
-                widget::text::monotext(connected.clone()).into(),
+                widget::text::monotext(device_name).into(),
                 widget::button::standard("Disconnect")
-                    .on_press(Message::DisconnectDevice(connected.clone()))
+                    .on_press(Message::DisconnectDevice(device_id.clone()))
                     .into(),
                 widget::button::standard("Pair")
-                    .on_press(Message::PairDevice((connected.clone(), true)))
+                    .on_press(Message::PairDevice((device_id.clone(), true)))
                     .into(),
                 widget::button::standard("Send Ping")
                     .on_press(Message::SendPing((
-                        connected.clone(),
+                        device_id,
                         "Hello From COSMIC APPLET!".to_string(),
                     )))
                     .into(),
