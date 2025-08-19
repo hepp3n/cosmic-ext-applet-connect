@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
+use std::collections::HashSet;
+
 use cosmic::app::{Core, Task};
 use cosmic::iced::futures::{SinkExt, StreamExt};
 use cosmic::iced::window::Id;
@@ -20,7 +22,7 @@ pub struct CosmicConnect {
     popup: Option<Id>,
     /// KdeConnect client instance.
     kdeconnect: Option<KdeConnect>,
-    connected_devices: Vec<ConnectedId>,
+    connected_devices: HashSet<ConnectedId>,
 }
 
 #[derive(Debug, Clone)]
@@ -61,7 +63,7 @@ impl Application for CosmicConnect {
             core,
             popup: None,
             kdeconnect: None,
-            connected_devices: Vec::new(),
+            connected_devices: HashSet::new(),
         };
 
         (app, Task::none())
@@ -168,7 +170,7 @@ impl Application for CosmicConnect {
                         self.kdeconnect = Some(client);
                     }
                     KdeConnectEvent::DevicesUpdated(device) => {
-                        self.connected_devices.push(device);
+                        self.connected_devices.insert(device);
                     }
                 };
             }
