@@ -6,7 +6,7 @@ license = "GPL-3.0"
 rust-version = "1.80"
 
 [dependencies]
-i18n-embed-fl = "0.8"
+i18n-embed-fl = "0.10"
 open = "5.1.3"
 rust-embed = "8.3.0"
 tokio = { version = "1", features = ["full"] }
@@ -19,12 +19,14 @@ default-features = false
 features = ["applet", "tokio", "wayland"]
 
 [dependencies.i18n-embed]
-version = "0.14"
+version = "0.16"
 features = ["fluent-system", "desktop-requester"]
 
 [dependencies.kdeconnect]
-path = "../kdeconnect"
+git = "https://github.com/hepp3n/kdeconnect"
 
+[patch."https://github.com/hepp3n/kdeconnect"]
+kdeconnect = { path = "../kdeconnect-lib"}
 
 # Uncomment to test a locally-cloned libcosmic
 # [patch.'https://github.com/pop-os/libcosmic']
