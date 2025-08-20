@@ -10,34 +10,39 @@ use cosmic::iced_winit::commands::popup::{destroy_popup, get_popup};
 use cosmic::widget::{self, settings};
 use cosmic::{Application, Element};
 use kdeconnect::device::{ConnectedId, DeviceAction, Linked};
-use kdeconnect::KdeConnect;
+use kdeconnect::{ClientAction, KdeConnect};
+use tokio::sync::mpsc;
 use tracing::info;
 
-use crate::fl;
+use crate::config::ConnectConfig;
+use crate::{fl, APP_ID};
 
 pub struct CosmicConnect {
-    /// Application state which is managed by the COSMIC runtime.
     core: Core,
-    /// The popup id.
     popup: Option<Id>,
+    config: ConnectConfig,
     /// KdeConnect client instance.
     kdeconnect: Option<KdeConnect>,
-    connected_devices: HashSet<Linked>,
+    kdeconnect_client_action_sender: Option<mpsc::UnboundedSender<ClientAction>>,
+    connections: HashSet<Linked>,
+    paired: Vec<ConnectedId>,
 }
 
 #[derive(Debug, Clone)]
 pub enum Message {
     TogglePopup,
     PopupClosed(Id),
+    UpdateConfig(ConnectConfig),
     KdeConnect(KdeConnectEvent),
-    DisconnectDevice(ConnectedId),
+    DisconnectDevice(Linked),
+    Broadcast,
     PairDevice((ConnectedId, bool)),
     SendPing((ConnectedId, String)),
 }
 
 #[derive(Debug, Clone)]
 pub enum KdeConnectEvent {
-    Connected(KdeConnect),
+    Connected((KdeConnect, mpsc::UnboundedSender<ClientAction>)),
     DevicesUpdated(Linked),
 }
 
@@ -48,7 +53,7 @@ impl Application for CosmicConnect {
 
     type Message = Message;
 
-    const APP_ID: &'static str = "dev.heppen.CosmicExtConnect";
+    const APP_ID: &'static str = APP_ID;
 
     fn core(&self) -> &Core {
         &self.core
@@ -59,11 +64,22 @@ impl Application for CosmicConnect {
     }
 
     fn init(core: Core, _flags: Self::Flags) -> (Self, Task<Self::Message>) {
+        let config = ConnectConfig::config();
+        let paired = if config.paired.is_empty() {
+            Vec::new()
+        } else {
+            config.paired.clone()
+        };
+
         let app = CosmicConnect {
             core,
             popup: None,
             kdeconnect: None,
-            connected_devices: HashSet::new(),
+            kdeconnect_client_action_sender: None,
+            connections: HashSet::new(),
+            paired,
+
+            config,
         };
 
         (app, Task::none())
@@ -74,10 +90,12 @@ impl Application for CosmicConnect {
     }
 
     fn subscription(&self) -> Subscription<Self::Message> {
-        Subscription::run_with_id(
+        let mut subscriptions = Vec::new();
+
+        let kdeconnect = Subscription::run_with_id(
             1,
             stream::channel(100, |mut output| async move {
-                let (kdeconnect, mut devices) = KdeConnect::new();
+                let (kdeconnect, mut devices, client_action_sender) = KdeConnect::new();
                 let kconnect = kdeconnect.clone();
 
                 tokio::task::spawn(async move {
@@ -85,7 +103,10 @@ impl Application for CosmicConnect {
                 });
 
                 let _ = output
-                    .send(Message::KdeConnect(KdeConnectEvent::Connected(kdeconnect)))
+                    .send(Message::KdeConnect(KdeConnectEvent::Connected((
+                        kdeconnect,
+                        client_action_sender,
+                    ))))
                     .await;
 
                 while let Some(devices) = devices.next().await {
@@ -96,7 +117,18 @@ impl Application for CosmicConnect {
                         .await;
                 }
             }),
-        )
+        );
+
+        subscriptions.push(kdeconnect);
+
+        let config = self
+            .core()
+            .watch_config::<ConnectConfig>(Self::APP_ID)
+            .map(|update| Message::UpdateConfig(update.config));
+
+        subscriptions.push(config);
+
+        Subscription::batch(subscriptions)
     }
 
     fn view(&self) -> Element<'_, Self::Message> {
@@ -108,9 +140,14 @@ impl Application for CosmicConnect {
     }
 
     fn view_window(&self, _id: Id) -> Element<'_, Self::Message> {
-        let mut content_list = widget::list_column().add(widget::text(fl!("applet-name")));
+        let mut content_list = widget::list_column().add(widget::settings::flex_item_row(vec![
+            widget::text(fl!("applet-name")).into(),
+            widget::button::standard("Broadcast")
+                .on_press(Message::Broadcast)
+                .into(),
+        ]));
 
-        for connected in &self.connected_devices {
+        for connected in &self.connections {
             let device_id = connected.0.clone();
             let device_name = connected.1.clone();
             let _connection_type = connected.2.clone();
@@ -118,11 +155,18 @@ impl Application for CosmicConnect {
             content_list = content_list.add(settings::item_row(vec![
                 widget::text::monotext(device_name).into(),
                 widget::button::standard("Disconnect")
-                    .on_press(Message::DisconnectDevice(device_id.clone()))
+                    .on_press(Message::DisconnectDevice(connected.clone()))
                     .into(),
-                widget::button::standard("Pair")
-                    .on_press(Message::PairDevice((device_id.clone(), true)))
-                    .into(),
+                widget::button::standard(if self.is_paired(&device_id) {
+                    "Unpair"
+                } else {
+                    "Pair"
+                })
+                .on_press(Message::PairDevice((
+                    device_id.clone(),
+                    !self.is_paired(&device_id),
+                )))
+                .into(),
                 widget::button::standard("Send Ping")
                     .on_press(Message::SendPing((
                         device_id,
@@ -167,27 +211,80 @@ impl Application for CosmicConnect {
                     self.popup = None;
                 }
             }
+            Message::UpdateConfig(config) => {
+                self.config = config;
+            }
             Message::KdeConnect(event) => {
                 match event {
-                    KdeConnectEvent::Connected(client) => {
+                    KdeConnectEvent::Connected((client, client_action_sender)) => {
                         info!("Connected to backend server");
                         self.kdeconnect = Some(client);
+                        self.kdeconnect_client_action_sender = Some(client_action_sender);
                     }
                     KdeConnectEvent::DevicesUpdated(device) => {
-                        self.connected_devices.insert(device);
+                        let handler = ConnectConfig::config_handler().unwrap();
+
+                        if !self.connections.contains(&device) {
+                            self.connections.insert(device.clone());
+
+                            if let Err(err) = self
+                                .config
+                                .set_last_connections(&handler, self.connections.clone())
+                            {
+                                tracing::warn!("failed to save config: {}", err);
+                            };
+                        }
                     }
                 };
             }
-            Message::DisconnectDevice(id) => {
+            Message::DisconnectDevice(linked) => {
                 if let Some(client) = &self.kdeconnect {
-                    client.send_action(id, DeviceAction::Disconnect);
+                    client.send_action(linked.0.clone(), DeviceAction::Disconnect);
                 }
+
+                let handler = ConnectConfig::config_handler().unwrap();
+
+                if self.connections.contains(&linked) {
+                    self.connections.remove(&linked);
+
+                    if let Err(err) = self
+                        .config
+                        .set_last_connections(&handler, self.connections.clone())
+                    {
+                        tracing::warn!("failed to save config: {}", err);
+                    };
+                }
+
                 self.kdeconnect = None;
-                self.connected_devices.clear();
+            }
+            Message::Broadcast => {
+                if let Some(sender) = &self.kdeconnect_client_action_sender {
+                    sender.send(ClientAction::Broadcast).unwrap_or_else(|err| {
+                        tracing::warn!("failed to send broadcast action: {}", err);
+                    });
+                }
             }
             Message::PairDevice((id, flag)) => {
                 if let Some(client) = &self.kdeconnect {
-                    client.send_action(id, DeviceAction::Pair(flag));
+                    client.send_action(id.clone(), DeviceAction::Pair(flag));
+                }
+
+                let handler = ConnectConfig::config_handler().unwrap();
+
+                if self.paired.contains(&id) != flag {
+                    self.paired.retain(|x| x != &id);
+
+                    if let Err(err) = self.config.set_paired(&handler, self.paired.clone()) {
+                        tracing::warn!("failed to save config: {}", err);
+                    };
+                }
+
+                if flag {
+                    self.paired.push(id.clone());
+
+                    if let Err(err) = self.config.set_paired(&handler, self.paired.clone()) {
+                        tracing::warn!("failed to save config: {}", err);
+                    };
                 }
             }
             Message::SendPing((id, msg)) => {
@@ -201,5 +298,11 @@ impl Application for CosmicConnect {
 
     fn style(&self) -> Option<cosmic::iced_runtime::Appearance> {
         Some(cosmic::applet::style())
+    }
+}
+
+impl CosmicConnect {
+    fn is_paired(&self, id: &ConnectedId) -> bool {
+        self.config.paired.contains(id)
     }
 }

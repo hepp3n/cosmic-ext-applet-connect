@@ -4,7 +4,11 @@ use app::CosmicConnect;
 use tracing::Level;
 use tracing_subscriber::FmtSubscriber;
 mod app;
+mod config;
 mod core;
+
+pub const APP_ID: &str = "dev.heppen.CosmicExtConnect";
+pub const CONFIG_VERSION: u64 = 1;
 
 fn main() -> cosmic::iced::Result {
     let subscriber = FmtSubscriber::builder()
