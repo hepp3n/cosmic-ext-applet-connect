@@ -239,6 +239,7 @@ impl Application for CosmicConnect {
             },
             Message::DisconnectDevice(device) => {
                 device.send(DeviceAction::Disconnect);
+                self.connections.remove(&device.id.id);
                 self.kdeconnect = None;
             }
             Message::Broadcast => {
