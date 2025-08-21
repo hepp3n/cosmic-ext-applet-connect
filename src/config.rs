@@ -1,15 +1,12 @@
-use std::collections::HashSet;
-
 use cosmic::cosmic_config::{self, cosmic_config_derive::CosmicConfigEntry, CosmicConfigEntry};
-use kdeconnect::device::{ConnectedId, Linked};
+use kdeconnect::device::DeviceId;
 
 use crate::{APP_ID, CONFIG_VERSION};
 
 #[derive(Debug, Default, Clone, CosmicConfigEntry, Eq, PartialEq)]
 #[version = 1]
 pub struct ConnectConfig {
-    pub last_connections: HashSet<Linked>,
-    pub paired: Vec<ConnectedId>,
+    pub paired: Option<DeviceId>,
 }
 
 impl ConnectConfig {

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
-use std::collections::HashSet;
+use std::collections::HashMap;
 
 use cosmic::app::{Core, Task};
 use cosmic::iced::futures::{SinkExt, StreamExt};
@@ -8,8 +8,10 @@ use cosmic::iced::window::Id;
 use cosmic::iced::{self, stream, Limits, Subscription};
 use cosmic::iced_winit::commands::popup::{destroy_popup, get_popup};
 use cosmic::widget::{self, settings};
-use cosmic::{Application, Element};
-use kdeconnect::device::{ConnectedId, DeviceAction, Linked};
+use cosmic::{Action, Application, Element};
+use kdeconnect::device::{
+    Device, DeviceAction, DeviceId, DeviceResponse, DeviceState, PairingState,
+};
 use kdeconnect::{ClientAction, KdeConnect};
 use tokio::sync::mpsc;
 use tracing::info;
@@ -24,8 +26,7 @@ pub struct CosmicConnect {
     /// KdeConnect client instance.
     kdeconnect: Option<KdeConnect>,
     kdeconnect_client_action_sender: Option<mpsc::UnboundedSender<ClientAction>>,
-    connections: HashSet<Linked>,
-    paired: Vec<ConnectedId>,
+    connections: HashMap<String, (Device, DeviceState)>,
 }
 
 #[derive(Debug, Clone)]
@@ -34,16 +35,18 @@ pub enum Message {
     PopupClosed(Id),
     UpdateConfig(ConnectConfig),
     KdeConnect(KdeConnectEvent),
-    DisconnectDevice(Linked),
+    DeviceUpdate(Box<DeviceResponse>),
+    DisconnectDevice(Box<Device>),
     Broadcast,
-    PairDevice((ConnectedId, bool)),
-    SendPing((ConnectedId, String)),
+    UpdateState((Box<Device>, Box<DeviceState>)),
+    PairDevice(DeviceId),
+    UnPairDevice(DeviceId),
+    SendPing((DeviceId, String)),
 }
 
 #[derive(Debug, Clone)]
 pub enum KdeConnectEvent {
     Connected((KdeConnect, mpsc::UnboundedSender<ClientAction>)),
-    DevicesUpdated(Linked),
 }
 
 impl Application for CosmicConnect {
@@ -65,19 +68,13 @@ impl Application for CosmicConnect {
 
     fn init(core: Core, _flags: Self::Flags) -> (Self, Task<Self::Message>) {
         let config = ConnectConfig::config();
-        let paired = if config.paired.is_empty() {
-            Vec::new()
-        } else {
-            config.paired.clone()
-        };
 
         let app = CosmicConnect {
             core,
             popup: None,
             kdeconnect: None,
             kdeconnect_client_action_sender: None,
-            connections: HashSet::new(),
-            paired,
+            connections: HashMap::new(),
 
             config,
         };
@@ -95,7 +92,7 @@ impl Application for CosmicConnect {
         let kdeconnect = Subscription::run_with_id(
             1,
             stream::channel(100, |mut output| async move {
-                let (kdeconnect, mut devices, client_action_sender) = KdeConnect::new();
+                let (kdeconnect, client_action_sender, mut device_update) = KdeConnect::new();
                 let kconnect = kdeconnect.clone();
 
                 tokio::task::spawn(async move {
@@ -109,13 +106,13 @@ impl Application for CosmicConnect {
                     ))))
                     .await;
 
-                while let Some(devices) = devices.next().await {
-                    let _ = output
-                        .send(Message::KdeConnect(KdeConnectEvent::DevicesUpdated(
-                            devices,
-                        )))
-                        .await;
-                }
+                let mut out = output.clone();
+
+                tokio::task::spawn(async move {
+                    while let Some(update) = device_update.next().await {
+                        let _ = out.send(Message::DeviceUpdate(Box::new(update))).await;
+                    }
+                });
             }),
         );
 
@@ -147,33 +144,41 @@ impl Application for CosmicConnect {
                 .into(),
         ]));
 
-        for connected in &self.connections {
-            let device_id = connected.0.clone();
-            let device_name = connected.1.clone();
-            let _connection_type = connected.2.clone();
-
+        for (device, state) in self.connections.values() {
             content_list = content_list.add(settings::item_row(vec![
-                widget::text::monotext(device_name).into(),
+                widget::text::monotext(device.id.name.clone()).into(),
                 widget::button::standard("Disconnect")
-                    .on_press(Message::DisconnectDevice(connected.clone()))
+                    .on_press(Message::DisconnectDevice(Box::new(device.to_owned())))
                     .into(),
-                widget::button::standard(if self.is_paired(&device_id) {
-                    "Unpair"
+                if self.is_paired(device.id.clone()) {
+                    widget::button::standard("UnPair")
+                        .on_press(Message::UnPairDevice(device.id.clone()))
+                        .into()
                 } else {
-                    "Pair"
-                })
-                .on_press(Message::PairDevice((
-                    device_id.clone(),
-                    !self.is_paired(&device_id),
-                )))
-                .into(),
+                    widget::button::standard("Pair")
+                        .on_press(Message::PairDevice(device.id.clone()))
+                        .into()
+                },
                 widget::button::standard("Send Ping")
                     .on_press(Message::SendPing((
-                        device_id,
+                        device.id.clone(),
                         "Hello From COSMIC APPLET!".to_string(),
                     )))
                     .into(),
             ]));
+
+            let section = settings::section()
+                .title(state.device_id.to_string())
+                .add_maybe(if state.battery.is_some() {
+                    Some(settings::item(
+                        "Battery",
+                        widget::text(format!("{}%", state.battery.unwrap().charge)),
+                    ))
+                } else {
+                    None
+                });
+
+            content_list = content_list.add(section);
         }
 
         self.core
@@ -221,40 +226,19 @@ impl Application for CosmicConnect {
                         self.kdeconnect = Some(client);
                         self.kdeconnect_client_action_sender = Some(client_action_sender);
                     }
-                    KdeConnectEvent::DevicesUpdated(device) => {
-                        let handler = ConnectConfig::config_handler().unwrap();
-
-                        if !self.connections.contains(&device) {
-                            self.connections.insert(device.clone());
-
-                            if let Err(err) = self
-                                .config
-                                .set_last_connections(&handler, self.connections.clone())
-                            {
-                                tracing::warn!("failed to save config: {}", err);
-                            };
-                        }
-                    }
                 };
             }
-            Message::DisconnectDevice(linked) => {
-                if let Some(client) = &self.kdeconnect {
-                    client.send_action(linked.0.clone(), DeviceAction::Disconnect);
+            Message::DeviceUpdate(response) => match *response {
+                DeviceResponse::Refresh((device, state)) => {
+                    info!("Refreshing connection.");
+                    return Task::done(Action::App(Message::UpdateState((device, state))));
                 }
-
-                let handler = ConnectConfig::config_handler().unwrap();
-
-                if self.connections.contains(&linked) {
-                    self.connections.remove(&linked);
-
-                    if let Err(err) = self
-                        .config
-                        .set_last_connections(&handler, self.connections.clone())
-                    {
-                        tracing::warn!("failed to save config: {}", err);
-                    };
+                DeviceResponse::SyncClipboard(content) => {
+                    return cosmic::iced::clipboard::write(content);
                 }
-
+            },
+            Message::DisconnectDevice(device) => {
+                device.send(DeviceAction::Disconnect);
                 self.kdeconnect = None;
             }
             Message::Broadcast => {
@@ -264,33 +248,52 @@ impl Application for CosmicConnect {
                     });
                 }
             }
-            Message::PairDevice((id, flag)) => {
-                if let Some(client) = &self.kdeconnect {
-                    client.send_action(id.clone(), DeviceAction::Pair(flag));
-                }
+            Message::UpdateState((device, state)) => {
+                info!("Updating device state: {:?}", state);
+                self.connections
+                    .insert(device.id.id.clone(), (*device, *state));
+            }
+            Message::PairDevice(device) => {
+                info!("Requesting pairing for device: {}", device.id);
+
+                self.connections
+                    .get(&device.id)
+                    .iter()
+                    .for_each(|(device, _state)| {
+                        device.send(DeviceAction::Pair);
+                    });
 
                 let handler = ConnectConfig::config_handler().unwrap();
 
-                if self.paired.contains(&id) != flag {
-                    self.paired.retain(|x| x != &id);
-
-                    if let Err(err) = self.config.set_paired(&handler, self.paired.clone()) {
-                        tracing::warn!("failed to save config: {}", err);
-                    };
-                }
-
-                if flag {
-                    self.paired.push(id.clone());
-
-                    if let Err(err) = self.config.set_paired(&handler, self.paired.clone()) {
-                        tracing::warn!("failed to save config: {}", err);
-                    };
+                if let Err(err) = self.config.set_paired(&handler, Some(device.clone())) {
+                    tracing::warn!("failed to save config: {}", err);
                 }
             }
-            Message::SendPing((id, msg)) => {
-                if let Some(client) = &self.kdeconnect {
-                    client.send_action(id, DeviceAction::Ping(msg));
+            Message::UnPairDevice(device) => {
+                self.connections
+                    .get(&device.id)
+                    .iter()
+                    .for_each(|(device, _state)| {
+                        device.send(DeviceAction::UnPair);
+                    });
+
+                let handler = ConnectConfig::config_handler().unwrap();
+
+                info!("Requesting UnPair for device: {}", device.id);
+
+                if let Err(err) = self.config.set_paired(&handler, None) {
+                    tracing::warn!("failed to save config: {}", err);
                 }
+
+                self.connections.remove(&device.id);
+            }
+            Message::SendPing((id, msg)) => {
+                self.connections
+                    .get(&id.id)
+                    .iter()
+                    .for_each(|(device, _state)| {
+                        device.send(DeviceAction::Ping(msg.clone()));
+                    });
             }
         }
         Task::none()
@@ -302,7 +305,9 @@ impl Application for CosmicConnect {
 }
 
 impl CosmicConnect {
-    fn is_paired(&self, id: &ConnectedId) -> bool {
-        self.config.paired.contains(id)
+    fn is_paired(&self, device_id: DeviceId) -> bool {
+        self.connections
+            .get(&device_id.id)
+            .is_some_and(|(_device, state)| state.pairing_state == PairingState::Paired)
     }
 }
