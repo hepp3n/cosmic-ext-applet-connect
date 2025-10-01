@@ -14,7 +14,6 @@
     <p>KDE Connect allows you connect to your devices and share files, messages, and more.</p>
   </description>
   <launchable type="desktop-id">dev.heppen.CosmicExtConnect.desktop</launchable>
-  <icon type="remote" height="256" width="256">icons/hicolor/256x256/apps/com.example.CosmicAppletTemplate.svg</icon>
   <screenshots>
   </screenshots>
   <provides>
@@ -22,7 +21,7 @@
       <mimetype>text/plain</mimetype>
     </mimetypes>
     <binaries>
-      <binary>cosmic-applet-template</binary>
+      <binary>cosmic-ext-applet-connect</binary>
     </binaries>
   </provides>
 </component>
