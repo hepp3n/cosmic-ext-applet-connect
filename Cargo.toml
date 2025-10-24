@@ -1,9 +1,8 @@
 [package]
 name = "cosmic-ext-applet-connect"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 license = "GPL-3.0"
-rust-version = "1.80"
 
 [dependencies]
 i18n-embed-fl = "0.10"
@@ -25,8 +24,8 @@ features = ["fluent-system", "desktop-requester"]
 [dependencies.kdeconnect]
 git = "https://github.com/hepp3n/kdeconnect"
 
-[patch."https://github.com/hepp3n/kdeconnect"]
-kdeconnect = { path = "../kdeconnect-lib"}
+# [patch."https://github.com/hepp3n/kdeconnect"]
+# kdeconnect = { path = "../kdeconnect-lib"}
 
 # Uncomment to test a locally-cloned libcosmic
 # [patch.'https://github.com/pop-os/libcosmic']
